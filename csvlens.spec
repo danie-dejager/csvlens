@@ -28,6 +28,9 @@ export PATH="$PATH:$HOME/.cargo/bin"
 cargo build --release --locked
 
 %check
+# Install Rust using curl
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+export PATH="$PATH:$HOME/.cargo/bin"
 # Run the Rust tests
 cargo test --release --locked
 
