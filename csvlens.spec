@@ -35,7 +35,7 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 export PATH="$PATH:$HOME/.cargo/bin"
 rustup install 1.84.1
 rustup default 1.84.1
-cargo test --release --locked
+RUST_BACKTRACE=1 cargo test --release --locked
 
 %install
 # Create the necessary directory structure in the buildroot
