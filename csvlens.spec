@@ -25,13 +25,16 @@ csvlens is a command line CSV file viewer. It is like less but made for CSV.
 # Install Rust using curl
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 export PATH="$PATH:$HOME/.cargo/bin"
+rustup install 1.84.1
+rustup default 1.84.1
 cargo build --release --locked
 
 %check
 # Install Rust using curl
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 export PATH="$PATH:$HOME/.cargo/bin"
-# Run the Rust tests
+rustup install 1.84.1
+rustup default 1.84.1
 cargo test --release --locked
 
 %install
