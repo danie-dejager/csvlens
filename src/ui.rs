@@ -12,6 +12,7 @@ use ratatui::prelude::Position;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::symbols::line;
 use ratatui::text::{Line, Span};
+use ratatui::widgets::Clear;
 use ratatui::widgets::Widget;
 use ratatui::widgets::{Block, Borders, StatefulWidget};
 use regex::Regex;
@@ -257,6 +258,7 @@ impl<'a> CsvTable<'a> {
         state.borders_state = Some(BordersState {
             x_row_separator: view_layout.row_number_layout.x_row_separator,
             y_first_record,
+            x_freeze_separator: view_layout.x_freeze_separator,
         });
     }
 
@@ -286,6 +288,7 @@ impl<'a> CsvTable<'a> {
             return;
         }
 
+        // Line number separator
         let line_number_block = Block::default()
             .borders(Borders::RIGHT)
             .border_style(Style::default().fg(Color::Rgb(64, 64, 64)));
@@ -339,6 +342,39 @@ impl<'a> CsvTable<'a> {
                     .set_symbol(line::HORIZONTAL_UP);
             }
         }
+
+        // Freeze separator
+        if let Some(x_freeze_separator) = borders_state.x_freeze_separator {
+            // Clear highlight style made by render_row before rendering the separator
+            if x_freeze_separator < area.right() {
+                let x_freeze_separator_area =
+                    Rect::new(x_freeze_separator, y_first_record, 1, area.height);
+                Clear.render(x_freeze_separator_area, buf);
+
+                if let Some(cell) = buf.cell_mut(Position::new(
+                    x_freeze_separator,
+                    y_first_record.saturating_sub(1),
+                )) {
+                    cell.set_style(Style::default().fg(Color::Rgb(64, 64, 64)))
+                        .set_symbol("╥");
+                }
+
+                for y in y_first_record..y_first_record + area.height {
+                    if let Some(cell) = buf.cell_mut(Position::new(x_freeze_separator, y)) {
+                        cell.set_style(Style::default().fg(Color::Rgb(64, 64, 64)))
+                            .set_symbol(line::DOUBLE_VERTICAL);
+                    }
+                }
+
+                if let Some(cell) = buf.cell_mut(Position::new(
+                    x_freeze_separator,
+                    y_first_record + area.height,
+                )) {
+                    cell.set_style(Style::default().fg(Color::Rgb(64, 64, 64)))
+                        .set_symbol("╨");
+                }
+            }
+        }
     }
 
     fn get_effective_column_name(&self, column_name: &str, sorter_state: &SorterState) -> String {
@@ -371,7 +407,6 @@ impl<'a> CsvTable<'a> {
     ) -> u16 {
         let mut x_offset_header = x;
         let mut remaining_width = area.width.saturating_sub(x);
-        let cols_offset = state.cols_offset as usize;
         // TODO: seems strange that these have to be set every row
         let mut has_more_cols_to_show = false;
         let mut col_ending_pos_x = 0;
@@ -384,7 +419,10 @@ impl<'a> CsvTable<'a> {
             },
         };
         for (col_index, (hname, &hlen)) in row.iter().zip(column_widths).enumerate() {
-            if col_index < cols_offset {
+            if !state
+                .cols_offset
+                .should_filtered_column_index_be_rendered(col_index as u64)
+            {
                 continue;
             }
             let effective_width = min(remaining_width, hlen);
@@ -644,6 +682,7 @@ impl<'a> CsvTable<'a> {
                     InputMode::Filter => "Filter",
                     InputMode::FilterColumns => "Columns regex",
                     InputMode::Option => "Option",
+                    InputMode::FreezeColumns => "Number of columns to freeze",
                     _ => "",
                 };
                 if prefix.is_empty() {
@@ -693,7 +732,7 @@ impl<'a> CsvTable<'a> {
                 " [Row {}/{}, Col {}/{}]",
                 row_num,
                 total_str,
-                state.cols_offset + 1,
+                state.cols_offset.num_skip + 1,
                 state.total_cols,
             )
             .as_str();
@@ -767,10 +806,25 @@ impl<'a> CsvTable<'a> {
             width_with_spaces: row_num_section_width_with_spaces,
             x_row_separator,
         };
+
+        // x-position of the vertical separator if any columns are frozen
+        let x_freeze_separator = if state.cols_offset.num_freeze > 0 {
+            let mut x_sum = row_number_layout.x_row_separator;
+            for (column_index, width) in column_widths.iter().enumerate() {
+                if state.cols_offset.is_frozen(column_index as u64) {
+                    x_sum += width;
+                }
+            }
+            Some(x_sum)
+        } else {
+            None
+        };
+
         ViewLayout {
             column_widths,
             row_heights,
             row_number_layout,
+            x_freeze_separator,
         }
     }
 }
@@ -885,6 +939,7 @@ pub struct ViewLayout {
     pub column_widths: Vec<u16>,
     pub row_heights: Vec<u16>,
     pub row_number_layout: RowNumberLayout,
+    pub x_freeze_separator: Option<u16>,
 }
 
 impl ViewLayout {
@@ -1076,6 +1131,7 @@ impl SorterInfo {
 struct BordersState {
     x_row_separator: u16,
     y_first_record: u16,
+    x_freeze_separator: Option<u16>,
 }
 
 pub struct DebugStats {
@@ -1146,7 +1202,7 @@ impl DebugStats {
 pub struct CsvTableState {
     // TODO: types appropriate?
     pub rows_offset: u64,
-    pub cols_offset: u64,
+    pub cols_offset: view::ColumnsOffset,
     pub num_cols_rendered: u64,
     pub more_cols_to_show: Option<bool>,
     filename: Option<String>,
@@ -1181,7 +1237,7 @@ impl CsvTableState {
     ) -> Self {
         Self {
             rows_offset: 0,
-            cols_offset: 0,
+            cols_offset: view::ColumnsOffset::default(),
             num_cols_rendered: 0,
             more_cols_to_show: None,
             filename,
@@ -1211,7 +1267,7 @@ impl CsvTableState {
         self.rows_offset = offset;
     }
 
-    pub fn set_cols_offset(&mut self, offset: u64) {
+    pub fn set_cols_offset(&mut self, offset: view::ColumnsOffset) {
         self.cols_offset = offset;
     }
 

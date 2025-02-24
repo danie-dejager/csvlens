@@ -30,6 +30,7 @@ pub enum Control {
     Filter(String),
     FilterColumns(String),
     FilterLikeCell,
+    FreezeColumns(usize),
     Quit,
     BufferContent(Input),
     BufferReset,
@@ -41,6 +42,7 @@ pub enum Control {
     Reset,
     Help,
     UnknownOption(String),
+    UserError(String),
     Nothing,
 }
 
@@ -148,6 +150,10 @@ impl InputHandler {
                 }
                 KeyCode::Char('-') => {
                     self.init_buffer(InputMode::Option);
+                    Control::empty_buffer()
+                }
+                KeyCode::Char('f') => {
+                    self.init_buffer(InputMode::FreezeColumns);
                     Control::empty_buffer()
                 }
                 KeyCode::Enter => Control::Select,
@@ -260,7 +266,19 @@ impl InputHandler {
             }
             _ => {
                 if input.handle_event(&Event::Key(key_event)).is_some() {
-                    return Control::BufferContent(input.clone());
+                    // Parse immediately for FreezeColumns since it should just be a number
+                    let control = if self.mode == InputMode::FreezeColumns {
+                        let control = if let Ok(n) = input.value().parse::<usize>() {
+                            Control::FreezeColumns(n)
+                        } else {
+                            Control::UserError(format!("Invalid number: {}", input.value()))
+                        };
+                        self.reset_buffer();
+                        control
+                    } else {
+                        Control::BufferContent(input.clone())
+                    };
+                    return control;
                 }
                 Control::Nothing
             }
