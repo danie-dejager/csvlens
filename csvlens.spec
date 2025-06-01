@@ -1,5 +1,5 @@
 %define name csvlens
-%define version 0.12.0
+%define version 0.13.0
 %define release 1%{?dist}
 
 Summary:  Command line csv viewer
