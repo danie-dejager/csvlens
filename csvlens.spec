@@ -20,20 +20,6 @@ csvlens is a command line CSV file viewer. It is like less but made for CSV.
 
 %prep
 %setup -q -n csvlens-%{version}
-cat <<EOF | patch -p0
---- src/app.rs  2025-03-10 09:21:08.728286972 +0200
-+++ src/app.rs  2025-03-10 09:23:17.238121646 +0200
-@@ -2354,7 +2354,9 @@
-             &mut terminal,
-             Control::FilterColumns("COL1".into()),
-         );
-+        till_app_ready(&app);
-         step_and_draw(&mut app, &mut terminal, Control::Filter("x1".into()));
-+        till_app_ready(&app);
-         // Toggle to cell selection
-         step_and_draw(&mut app, &mut terminal, Control::ToggleSelectionType);
-         step_and_draw(&mut app, &mut terminal, Control::ToggleSelectionType);
-EOF
 
 %build
 # Install Rust using curl
