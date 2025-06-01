@@ -7,11 +7,14 @@ use crate::theme::Theme;
 use crate::view;
 use crate::view::Header;
 use crate::wrap;
+use ansi_to_tui::IntoText as _;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::prelude::Position;
+use ratatui::style::Styled;
 use ratatui::style::{Modifier, Style};
 use ratatui::symbols::line;
+use ratatui::text::Text;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Clear;
 use ratatui::widgets::Widget;
@@ -27,6 +30,20 @@ use std::time::Duration;
 const NUM_SPACES_AFTER_LINE_NUMBER: u16 = 2;
 const NUM_SPACES_BETWEEN_COLUMNS: u16 = 4;
 const MAX_COLUMN_WIDTH_FRACTION: f32 = 0.3;
+
+pub fn set_line_safe(
+    buf: &mut Buffer,
+    x: u16,
+    y: u16,
+    line: &Line<'_>,
+    max_width: u16,
+) -> Option<(u16, u16)> {
+    if y < buf.area.bottom() {
+        Some(buf.set_line(x, y, line, max_width))
+    } else {
+        None
+    }
+}
 
 #[derive(Debug)]
 pub struct ColumnWidthOverrides {
@@ -650,7 +667,7 @@ impl<'a> CsvTable<'a> {
                     line.spans
                         .push(Span::styled(" ".repeat(padding_width), filler_style.style));
                 }
-                buf.set_line(x, y + offset, &line, width);
+                set_line_safe(buf, x, y + offset, &line, width);
             } else {
                 // There are extra vertical spaces that are just empty lines. Fill them with the
                 // correct style.
@@ -667,7 +684,7 @@ impl<'a> CsvTable<'a> {
                     content = format!("{SUFFIX}{}", truncated_content.as_str());
                 }
                 let span = Span::styled(content, filler_style.style);
-                buf.set_line(x, y + offset, &Line::from(vec![span]), width);
+                set_line_safe(buf, x, y + offset, &Line::from(vec![span]), width);
             }
         }
     }
@@ -675,11 +692,14 @@ impl<'a> CsvTable<'a> {
     fn render_status(&self, area: Rect, buf: &mut Buffer, state: &mut CsvTableState) {
         // Content of status line (separator already plotted elsewhere)
         let style = Style::default().fg(state.theme.status);
+        let mut prompt_text: Text;
         let mut content: String;
         state.cursor_xy = None;
         if let Some(msg) = &state.transient_message {
+            prompt_text = Text::default();
             content = msg.to_owned();
         } else if let BufferState::Enabled(buffer_mode, input) = &state.buffer_content {
+            prompt_text = Text::default();
             let get_prefix = |&input_mode| {
                 let prefix = match input_mode {
                     InputMode::GotoLine => "Go to line",
@@ -705,8 +725,16 @@ impl<'a> CsvTable<'a> {
                 area.bottom().saturating_sub(1),
             ));
         } else {
+            // User provided prompt
+            prompt_text = if let Some(prompt) = &state.prompt {
+                prompt.into_text().unwrap_or(Text::default())
+            } else {
+                Text::default()
+            };
             // Filename
-            if let Some(f) = &state.filename {
+            if state.prompt.is_some() {
+                content = "".to_string();
+            } else if let Some(f) = &state.filename {
                 content = f.to_string();
             } else {
                 content = "stdin".to_string();
@@ -779,8 +807,10 @@ impl<'a> CsvTable<'a> {
                 content += format!(" (debug: {})", state.debug).as_str();
             }
         }
-        let span = Span::styled(content, style);
-        buf.set_span(area.x, area.bottom().saturating_sub(1), &span, area.width);
+        prompt_text = prompt_text.set_style(style);
+        prompt_text.push_span(Span::from(content));
+        let prompt_area = Rect::new(area.x, area.y + 1, area.width, area.height);
+        prompt_text.render(prompt_area, buf);
     }
 
     fn get_view_layout(&self, area: Rect, state: &mut CsvTableState, rows: &[Row]) -> ViewLayout {
@@ -1231,6 +1261,7 @@ pub struct CsvTableState {
     pub cursor_xy: Option<(u16, u16)>,
     pub theme: Theme,
     pub color_columns: bool,
+    pub prompt: Option<String>,
     pub debug: String,
 }
 
@@ -1241,6 +1272,7 @@ impl CsvTableState {
         echo_column: &Option<String>,
         ignore_case: bool,
         color_columns: bool,
+        prompt: Option<String>,
     ) -> Self {
         Self {
             rows_offset: 0,
@@ -1268,6 +1300,7 @@ impl CsvTableState {
             cursor_xy: None,
             theme: Theme::default(),
             color_columns,
+            prompt,
             debug: "".into(),
         }
     }

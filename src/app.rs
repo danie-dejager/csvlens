@@ -175,6 +175,7 @@ impl App {
         find_regex: Option<String>,
         freeze_cols_offset: Option<u64>,
         color_columns: bool,
+        prompt: Option<String>,
     ) -> CsvlensResult<Self> {
         let input_handler = InputHandler::new();
 
@@ -213,6 +214,7 @@ impl App {
             &echo_column,
             ignore_case,
             color_columns,
+            prompt,
         );
 
         let finder: Option<find::Finder> = None;
@@ -901,6 +903,7 @@ mod tests {
         columns_regex: Option<String>,
         filter_regex: Option<String>,
         find_regex: Option<String>,
+        prompt: Option<String>,
     }
 
     impl AppBuilder {
@@ -916,6 +919,7 @@ mod tests {
                 columns_regex: None,
                 filter_regex: None,
                 find_regex: None,
+                prompt: None,
             }
         }
 
@@ -933,6 +937,7 @@ mod tests {
                 self.find_regex,
                 None,
                 false,
+                self.prompt,
             )
         }
 
@@ -963,6 +968,11 @@ mod tests {
 
         fn echo_column(mut self, column: &str) -> Self {
             self.echo_column = Some(column.to_owned());
+            self
+        }
+
+        fn prompt(mut self, prompt: &str) -> Self {
+            self.prompt = Some(prompt.to_owned());
             self
         }
     }
@@ -2422,6 +2432,130 @@ mod tests {
             "───┴────────────────╨─────────────────────────────",
             "stdin [Row 1/128, Col 6/10]                       ",
         ];
+        assert_eq!(lines, expected);
+    }
+
+    #[test]
+    fn test_prompt() {
+        let mut app = AppBuilder::new("tests/data/cities.csv")
+            .echo_column("City")
+            .columns_regex(Some("NS|City|State".to_string()))
+            .prompt("\x1b[32m\x1b[1mSelect your city!\x1b[0m")
+            .build()
+            .unwrap();
+        till_app_ready(&app);
+
+        let backend = TestBackend::new(50, 10);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        step_and_draw(&mut app, &mut terminal, Control::Nothing);
+        let actual_buffer = terminal.backend().buffer().clone();
+        let lines = to_lines(&actual_buffer);
+        let expected = vec![
+            "──────────────────────────────────────────────────",
+            "      NS    City               State              ",
+            "───┬────────────────────────────────────┬─────────",
+            "1  │  N     Youngstown         OH       │         ",
+            "2  │  N     Yankton            SD       │         ",
+            "3  │  N     Yakima             WA       │         ",
+            "4  │  N     Worcester          MA       │         ",
+            "5  │  N     Wisconsin Dells    WI       │         ",
+            "───┴────────────────────────────────────┴─────────",
+            "Select your city! [Row 1/128, Col 1/3] [Filter \"NS",
+        ];
+        assert_eq!(lines, expected);
+    }
+
+    #[test]
+    fn test_degenerate_height_0() {
+        let mut app = AppBuilder::new("tests/data/cities.csv")
+            .prompt("City, city everywhere!")
+            .build()
+            .unwrap();
+        till_app_ready(&app);
+
+        let backend = TestBackend::new(50, 0);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        step_and_draw(&mut app, &mut terminal, Control::Nothing);
+        let actual_buffer = terminal.backend().buffer().clone();
+        let lines = to_lines(&actual_buffer);
+        let expected = vec![""];
+        assert_eq!(lines, expected);
+    }
+
+    #[test]
+    fn test_degenerate_height_1() {
+        let mut app = AppBuilder::new("tests/data/cities.csv")
+            .prompt("City, city everywhere!")
+            .build()
+            .unwrap();
+        till_app_ready(&app);
+
+        let backend = TestBackend::new(50, 1);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        step_and_draw(&mut app, &mut terminal, Control::Nothing);
+        let actual_buffer = terminal.backend().buffer().clone();
+        let lines = to_lines(&actual_buffer);
+        let expected = vec!["──────────────────────────────────────────────────"];
+        assert_eq!(lines, expected);
+    }
+
+    #[test]
+    fn test_degenerate_height_2() {
+        let mut app = AppBuilder::new("tests/data/cities.csv")
+            .prompt("City, city everywhere!")
+            .build()
+            .unwrap();
+        till_app_ready(&app);
+
+        let backend = TestBackend::new(50, 2);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        step_and_draw(&mut app, &mut terminal, Control::Nothing);
+        let actual_buffer = terminal.backend().buffer().clone();
+        let lines = to_lines(&actual_buffer);
+        let expected = vec![
+            "──────────────────────────────────────────────────",
+            "City, city everywhere! [Row -/128, Col 1/10]L…    ",
+        ];
+        assert_eq!(lines, expected);
+    }
+
+    #[test]
+    fn test_degenerate_width_0() {
+        let mut app = AppBuilder::new("tests/data/cities.csv")
+            .prompt("City, city everywhere!")
+            .build()
+            .unwrap();
+        till_app_ready(&app);
+
+        let backend = TestBackend::new(0, 10);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        step_and_draw(&mut app, &mut terminal, Control::Nothing);
+        let actual_buffer = terminal.backend().buffer().clone();
+        let lines = to_lines(&actual_buffer);
+        let expected = vec!["", "", "", "", "", "", "", "", "", ""];
+        assert_eq!(lines, expected);
+    }
+
+    #[test]
+    fn test_degenerate_width_1() {
+        let mut app = AppBuilder::new("tests/data/cities.csv")
+            .prompt("City, city everywhere!")
+            .build()
+            .unwrap();
+        till_app_ready(&app);
+
+        let backend = TestBackend::new(1, 10);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        step_and_draw(&mut app, &mut terminal, Control::Nothing);
+        let actual_buffer = terminal.backend().buffer().clone();
+        let lines = to_lines(&actual_buffer);
+        let expected = vec!["─", " ", "─", "1", "2", "3", "4", "5", " ", "C"];
         assert_eq!(lines, expected);
     }
 }
