@@ -1,6 +1,6 @@
 %define name csvlens
-%define version 0.13.0
-%define release 2%{?dist}
+%define version 0.14.0
+%define release 1%{?dist}
 
 Summary:  Command line csv viewer
 Name:     %{name}
