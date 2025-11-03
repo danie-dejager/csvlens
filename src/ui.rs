@@ -3,6 +3,7 @@ use crate::csv::Row;
 use crate::find;
 use crate::sort;
 use crate::sort::SortOrder;
+use crate::sort::SortType;
 use crate::theme::Theme;
 use crate::view;
 use crate::view::Header;
@@ -402,7 +403,12 @@ impl<'a> CsvTable<'a> {
                 SortOrder::Ascending => "▴",
                 SortOrder::Descending => "▾",
             };
-            return format!("{} [{}]", column_name, indicator);
+
+            let sort_type_indicator = match info.sort_type {
+                SortType::Natural => "N",
+                _ => "",
+            };
+            return format!("{} [{}{}]", column_name, indicator, sort_type_indicator);
         }
         column_name.to_string()
     }
@@ -1142,6 +1148,7 @@ impl SorterState {
             status: sorter.status(),
             column_name: sorter.column_name().to_string(),
             order: sort_order,
+            sort_type: sorter.sort_type(),
         })
     }
 }
@@ -1150,11 +1157,16 @@ struct SorterInfo {
     status: sort::SorterStatus,
     column_name: String,
     order: SortOrder,
+    sort_type: sort::SortType,
 }
 
 impl SorterInfo {
     fn status_line(&self) -> String {
-        let prefix = format!("[Sorting by {}", self.column_name);
+        let sort_type_str = match self.sort_type {
+            sort::SortType::Natural => "natural",
+            sort::SortType::Auto => "auto based on type",
+        };
+        let prefix = format!("[Sorting by {} ({})", self.column_name, sort_type_str);
         match &self.status {
             sort::SorterStatus::Running => format!("{prefix}...]").to_string(),
             sort::SorterStatus::Error(error_msg) => {
@@ -1175,6 +1187,7 @@ pub struct DebugStats {
     show_stats: bool,
     rows_view_stats: Option<crate::view::PerfStats>,
     finder_elapsed: Option<Duration>,
+    sorter_elapsed: Option<Duration>,
     render_elapsed: Option<Duration>,
 }
 
@@ -1184,6 +1197,7 @@ impl DebugStats {
             show_stats: false,
             rows_view_stats: None,
             finder_elapsed: None,
+            sorter_elapsed: None,
             render_elapsed: None,
         }
     }
@@ -1198,6 +1212,10 @@ impl DebugStats {
 
     pub fn finder_elapsed(&mut self, elapsed: Option<Duration>) {
         self.finder_elapsed = elapsed;
+    }
+
+    pub fn sorter_elapsed(&mut self, elapsed: Option<Duration>) {
+        self.sorter_elapsed = elapsed;
     }
 
     pub fn render_elapsed(&mut self, elapsed: Option<Duration>) {
@@ -1226,6 +1244,9 @@ impl DebugStats {
         }
         if let Some(elapsed) = self.finder_elapsed {
             line += format!(" finder:{:.3}ms", elapsed.as_micros() as f64 / 1000.0).as_str();
+        }
+        if let Some(elapsed) = self.sorter_elapsed {
+            line += format!(" sorter:{:.3}ms", elapsed.as_micros() as f64 / 1000.0).as_str();
         }
         if let Some(elapsed) = self.render_elapsed {
             line += format!(" render:{:.3}ms", elapsed.as_micros() as f64 / 1000.0).as_str();
@@ -1361,5 +1382,34 @@ impl CsvTableState {
         } else {
             self.sorter_state = SorterState::Disabled;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sort::{SortType, SorterStatus};
+
+    #[test]
+    fn test_sorter_info_status_line() {
+        let info = SorterInfo {
+            status: SorterStatus::Running,
+            column_name: "test_column".to_string(),
+            order: SortOrder::Ascending,
+            sort_type: SortType::Natural,
+        };
+
+        let status_line = info.status_line();
+        assert!(status_line.contains("Sorting by test_column (natural)"));
+
+        let info_lex = SorterInfo {
+            status: SorterStatus::Running,
+            column_name: "test_column".to_string(),
+            order: SortOrder::Ascending,
+            sort_type: SortType::Auto,
+        };
+
+        let status_line_lex = info_lex.status_line();
+        assert!(status_line_lex.contains("Sorting by test_column (auto based on type)"));
     }
 }

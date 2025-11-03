@@ -2,8 +2,11 @@ use crate::errors::{CsvlensError, CsvlensResult};
 
 /// Delimiter behaviour as specified in the command line
 pub enum Delimiter {
-    /// Use the default delimiter (comma)
+    /// Use the default delimiter (auto detect)
     Default,
+
+    /// Comma delimiter
+    Comma,
 
     /// Use tab as the delimiter
     Tab,
@@ -17,7 +20,14 @@ pub enum Delimiter {
 
 impl Delimiter {
     /// Create a Delimiter by parsing the command line argument for the delimiter
-    pub fn from_arg(delimiter_arg: &Option<String>, tab_separation: bool) -> CsvlensResult<Self> {
+    pub fn from_arg(
+        delimiter_arg: &Option<String>,
+        tab_separation: bool,
+        comma_separation: bool,
+    ) -> CsvlensResult<Self> {
+        if comma_separation {
+            return Ok(Delimiter::Comma);
+        }
         if tab_separation {
             return Ok(Delimiter::Tab);
         }
@@ -50,8 +60,8 @@ impl Delimiter {
 
 /// Sniff the delimiter from the file
 pub fn sniff_delimiter(filename: &str) -> Option<u8> {
-    let mut sniffer = csv_sniffer::Sniffer::new();
-    sniffer.sample_size(csv_sniffer::SampleSize::Records(200));
+    let mut sniffer = qsv_sniffer::Sniffer::new();
+    sniffer.sample_size(qsv_sniffer::SampleSize::Records(200));
     if let Ok(metadata) = sniffer.sniff_path(filename) {
         return Some(metadata.dialect.delimiter);
     }

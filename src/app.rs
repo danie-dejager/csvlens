@@ -1,4 +1,4 @@
-extern crate csv_sniffer;
+extern crate qsv_sniffer;
 
 use crate::columns_filter::ColumnsFilter;
 use crate::csv;
@@ -21,7 +21,7 @@ use anyhow::Result;
 use regex::Regex;
 use std::cmp::min;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 fn get_offsets_to_make_visible(
     found_record: &find::FoundEntry,
@@ -147,6 +147,17 @@ impl WrapMode {
     }
 }
 
+fn poll_finder_first_match(finder: &find::Finder, timeout: Duration) -> bool {
+    let start = Instant::now();
+    while start.elapsed() < timeout {
+        if finder.found_any() {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    false
+}
+
 pub struct App {
     input_handler: InputHandler,
     num_rows_not_visible: u16,
@@ -196,10 +207,10 @@ impl App {
         let num_rows = 50 - num_rows_not_visible;
 
         let delimiter = match delimiter {
-            Delimiter::Default => b',',
+            Delimiter::Comma => b',',
             Delimiter::Tab => b'\t',
             Delimiter::Character(d) => d,
-            Delimiter::Auto => sniff_delimiter(filename).unwrap_or(b','),
+            Delimiter::Default | Delimiter::Auto => sniff_delimiter(filename).unwrap_or(b','),
         };
         let config = csv::CsvConfig::new(filename, delimiter, no_headers);
         let shared_config = Arc::new(config);
@@ -474,11 +485,18 @@ impl App {
             Control::ToggleLineWrap(word_wrap) => {
                 self.handle_line_wrap_toggle(*word_wrap, true);
             }
-            Control::ToggleSort => {
+            Control::ToggleSort | Control::ToggleNaturalSort => {
+                let desired_sort_type = if matches!(control, Control::ToggleNaturalSort) {
+                    sort::SortType::Natural
+                } else {
+                    sort::SortType::Auto
+                };
                 if let Some(selected_column_index) = self.get_global_selected_column_index() {
                     let mut should_create_new_sorter = false;
-                    if let Some(column_index) = self.sorter.as_ref().map(|s| s.column_index) {
-                        if selected_column_index as usize != column_index {
+                    if let Some(sorter) = &self.sorter {
+                        if selected_column_index as usize != sorter.column_index
+                            || desired_sort_type != sorter.sort_type()
+                        {
                             should_create_new_sorter = true;
                         } else {
                             match self.sort_order {
@@ -502,6 +520,7 @@ impl App {
                             self.shared_config.clone(),
                             selected_column_index as usize,
                             column_name,
+                            desired_sort_type,
                         );
                         self.sorter = Some(Arc::new(_sorter));
                     }
@@ -563,7 +582,9 @@ impl App {
             if sorter.status() == SorterStatus::Finished {
                 if let Some(rows_view_sorter) = self.rows_view.sorter() {
                     // Sorter can be reused by rows view even if sort order is different.
-                    if rows_view_sorter.column_index != sorter.column_index {
+                    if rows_view_sorter.column_index != sorter.column_index
+                        || rows_view_sorter.sort_type() != sorter.sort_type()
+                    {
                         should_set_rows_view_sorter = true;
                     }
                 } else {
@@ -583,6 +604,7 @@ impl App {
                     // Internal state of finder needs to be rebuilt if sorter is different,
                     // including sort order.
                     if finder_sorter.column_index != sorter.column_index
+                        || finder_sorter.sort_type() != sorter.sort_type()
                         || finder.sort_order != self.sort_order
                     {
                         should_create_new_finder = true;
@@ -640,16 +662,7 @@ impl App {
         }
 
         // update rows and elapsed time if there are new results
-        self.csv_table_state
-            .debug_stats
-            .rows_view_perf(self.rows_view.perf_stats());
-        if let Some(fdr) = &self.finder {
-            self.csv_table_state
-                .debug_stats
-                .finder_elapsed(fdr.elapsed());
-        } else {
-            self.csv_table_state.debug_stats.finder_elapsed(None);
-        }
+        self.update_debug_stats();
 
         // TODO: is this update too late?
         self.csv_table_state
@@ -689,6 +702,21 @@ impl App {
         Ok(())
     }
 
+    fn update_debug_stats(&mut self) {
+        let debug_stats = &mut self.csv_table_state.debug_stats;
+        debug_stats.rows_view_perf(self.rows_view.perf_stats());
+        if let Some(fdr) = &self.finder {
+            debug_stats.finder_elapsed(fdr.elapsed());
+        } else {
+            debug_stats.finder_elapsed(None);
+        }
+        if let Some(sorter) = &self.sorter {
+            debug_stats.sorter_elapsed(sorter.elapsed());
+        } else {
+            debug_stats.sorter_elapsed(None);
+        }
+    }
+
     fn get_selection(&self) -> Option<String> {
         if let Some(result) = self.rows_view.get_cell_value_from_selection() {
             return Some(result);
@@ -716,7 +744,7 @@ impl App {
         column_index: Option<usize>,
         sorter: Option<Arc<sort::Sorter>>,
     ) {
-        let _finder = find::Finder::new(
+        let mut finder = find::Finder::new(
             self.shared_config.clone(),
             target,
             column_index,
@@ -725,17 +753,34 @@ impl App {
             self.columns_filter.clone(),
         )
         .unwrap();
-        self.finder = Some(_finder);
+
+        // Instead of calling rows_view.set_filter() right away, wait for a bit until the first
+        // match. Otherwise, it's almost guaranteed that no match will be found yet and the view
+        // port becomes empty and comes back again in the next tick at rate of 250ms. This appears
+        // as flickering. Also do this even when not filtering so jumping to first match is faster.
+        // For most small files, 5ms should be sufficient to prevent flickering while not
+        // introducing visible delays.
+        poll_finder_first_match(&finder, Duration::from_millis(5));
+
         if is_filter {
             self.rows_view.set_rows_from(0).unwrap();
-            self.rows_view
-                .set_filter(self.finder.as_ref().unwrap())
-                .unwrap();
+            self.rows_view.set_filter(&finder).unwrap();
         } else {
             // will scroll to first result below once ready
             self.first_found_scrolled = false;
             self.rows_view.reset_filter().unwrap();
+
+            // finder always searches from the beginning, but here row hint is set to the selected
+            // row so finder.next() will retrieve the next match after the selected row. Except when
+            // the very first row is selected, in which case the result will yield from the very
+            // top including the header row.
+            if let Some(selected_offset) = self.rows_view.selected_offset()
+                && selected_offset > 0
+            {
+                finder.set_row_hint(find::RowPos::Row(selected_offset as usize));
+            }
         }
+        self.finder = Some(finder);
     }
 
     fn create_regex(&mut self, s: &str, escape: bool) -> std::result::Result<Regex, regex::Error> {
@@ -1260,10 +1305,48 @@ mod tests {
     }
 
     #[test]
+    fn test_find_from_row_cursor() {
+        let mut app = AppBuilder::new("tests/data/simple.csv").build().unwrap();
+        till_app_ready(&app);
+
+        let backend = TestBackend::new(30, 10);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        // scroll down for a bit before finding
+        step_and_draw(&mut app, &mut terminal, Control::Nothing);
+        for _ in 0..2 {
+            step_and_draw(&mut app, &mut terminal, Control::ScrollDown);
+        }
+
+        // now find "1", it should not scroll back to A1, but to the next match after the current
+        // row (A10)
+        step_and_draw(&mut app, &mut terminal, Control::Find("1".into()));
+        till_app_ready(&app);
+        step_and_draw(&mut app, &mut terminal, Control::ScrollToNextFound);
+
+        let expected = vec![
+            "──────────────────────────────",
+            "       a      b               ",
+            "────┬────────────────┬────────",
+            "10  │  A10    B10    │        ",
+            "11  │  A11    B11    │        ",
+            "12  │  A12    B12    │        ",
+            "13  │  A13    B13    │        ",
+            "14  │  A14    B14    │        ",
+            "────┴────────────────┴────────",
+            "stdin [Row 12/5000, Col 1/2] [",
+        ];
+        let actual_buffer = terminal.backend().buffer().clone();
+        let lines = to_lines(&actual_buffer);
+        assert_eq!(lines, expected);
+    }
+
+    #[test]
     fn test_extra_fields_in_some_rows() {
         // Test getting column widths should not fail on data with bad formatting (some rows having
         // more fields than the header)
         let mut app = AppBuilder::new("tests/data/bad_double_quote.csv")
+            .delimiter(Delimiter::Comma)
             .build()
             .unwrap();
         till_app_ready(&app);
@@ -1291,7 +1374,10 @@ mod tests {
 
     #[test]
     fn test_extra_fields_right_most_border() {
-        let mut app = AppBuilder::new("tests/data/bad_73.csv").build().unwrap();
+        let mut app = AppBuilder::new("tests/data/bad_73.csv")
+            .delimiter(Delimiter::Comma)
+            .build()
+            .unwrap();
         till_app_ready(&app);
 
         let backend = TestBackend::new(35, 10);
@@ -1318,7 +1404,7 @@ mod tests {
     #[test]
     fn test_sniff_delimiter() {
         let mut app = AppBuilder::new("tests/data/small.bsv")
-            .delimiter(Delimiter::Auto)
+            .delimiter(Delimiter::Default)
             .build()
             .unwrap();
         till_app_ready(&app);
@@ -2042,6 +2128,112 @@ mod tests {
     }
 
     #[test]
+    fn test_natural_sorting() {
+        let mut app = AppBuilder::new("tests/data/natural_sort.csv")
+            .build()
+            .unwrap();
+        till_app_ready(&app);
+
+        let backend = TestBackend::new(80, 10);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        step_and_draw(&mut app, &mut terminal, Control::ToggleSelectionType);
+        // Select the name column (first column, no need to scroll)
+        step_and_draw(&mut app, &mut terminal, Control::ToggleNaturalSort);
+        till_app_ready(&app);
+        step_and_draw(&mut app, &mut terminal, Control::Nothing);
+
+        let actual_buffer = terminal.backend().buffer().clone();
+        let lines = to_lines(&actual_buffer);
+        let expected = vec![
+            "────────────────────────────────────────────────────────────────────────────────",
+            "       name [▴N]      value                                                     ",
+            "────┬──────────────────────────┬────────────────────────────────────────────────",
+            "13  │  appendix       0        │                                                ",
+            "9   │  chapter1       1        │                                                ",
+            "11  │  chapter2       2        │                                                ",
+            "10  │  chapter10      10       │                                                ",
+            "12  │  chapter20      20       │                                                ",
+            "────┴──────────────────────────┴────────────────────────────────────────────────",
+            "stdin [Row 13/13, Col 1/2]                                                      ",
+        ];
+        assert_eq!(lines, expected);
+
+        // Check descending
+        step_and_draw(&mut app, &mut terminal, Control::ToggleNaturalSort);
+        till_app_ready(&app);
+        step_and_draw(&mut app, &mut terminal, Control::Nothing);
+        let actual_buffer = terminal.backend().buffer().clone();
+        let lines = to_lines(&actual_buffer);
+        let expected = vec![
+            "────────────────────────────────────────────────────────────────────────────────",
+            "      name [▾N]      value                                                      ",
+            "───┬──────────────────────────┬─────────────────────────────────────────────────",
+            "8  │  file20.txt     20       │                                                 ",
+            "6  │  file10.txt     10       │                                                 ",
+            "7  │  file2.txt      2        │                                                 ",
+            "5  │  file1.txt      1        │                                                 ",
+            "4  │  disk11         110      │                                                 ",
+            "───┴──────────────────────────┴─────────────────────────────────────────────────",
+            "stdin [Row 8/13, Col 1/2]                                                       ",
+        ];
+        assert_eq!(lines, expected);
+    }
+
+    #[test]
+    fn test_toggle_auto_vs_natural_sorting() {
+        let mut app = AppBuilder::new("tests/data/natural_sort.csv")
+            .build()
+            .unwrap();
+        till_app_ready(&app);
+
+        let backend = TestBackend::new(80, 10);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        step_and_draw(&mut app, &mut terminal, Control::ToggleSelectionType);
+        // Select the name column (first column, no need to scroll)
+        step_and_draw(&mut app, &mut terminal, Control::ToggleNaturalSort);
+        till_app_ready(&app);
+        step_and_draw(&mut app, &mut terminal, Control::Nothing);
+
+        let actual_buffer = terminal.backend().buffer().clone();
+        let lines = to_lines(&actual_buffer);
+        let expected = vec![
+            "────────────────────────────────────────────────────────────────────────────────",
+            "       name [▴N]      value                                                     ",
+            "────┬──────────────────────────┬────────────────────────────────────────────────",
+            "13  │  appendix       0        │                                                ",
+            "9   │  chapter1       1        │                                                ",
+            "11  │  chapter2       2        │                                                ",
+            "10  │  chapter10      10       │                                                ",
+            "12  │  chapter20      20       │                                                ",
+            "────┴──────────────────────────┴────────────────────────────────────────────────",
+            "stdin [Row 13/13, Col 1/2]                                                      ",
+        ];
+        assert_eq!(lines, expected);
+
+        // Check toggling back to auto sorting
+        step_and_draw(&mut app, &mut terminal, Control::ToggleSort);
+        till_app_ready(&app);
+        step_and_draw(&mut app, &mut terminal, Control::Nothing);
+        let actual_buffer = terminal.backend().buffer().clone();
+        let lines = to_lines(&actual_buffer);
+        let expected = vec![
+            "────────────────────────────────────────────────────────────────────────────────",
+            "       name [▴]      value                                                      ",
+            "────┬─────────────────────────┬─────────────────────────────────────────────────",
+            "13  │  appendix      0        │                                                 ",
+            "9   │  chapter1      1        │                                                 ",
+            "10  │  chapter10     10       │                                                 ",
+            "11  │  chapter2      2        │                                                 ",
+            "12  │  chapter20     20       │                                                 ",
+            "────┴─────────────────────────┴─────────────────────────────────────────────────",
+            "stdin [Row 13/13, Col 1/2]                                                      ",
+        ];
+        assert_eq!(lines, expected);
+    }
+
+    #[test]
     fn test_sorting_with_filter() {
         let mut app = AppBuilder::new("tests/data/cities.csv").build().unwrap();
         till_app_ready(&app);
@@ -2445,6 +2637,7 @@ mod tests {
     #[test]
     fn test_irregular_filter_columns_then_rows() {
         let mut app = AppBuilder::new("tests/data/irregular_more_fields.csv")
+            .delimiter(Delimiter::Comma)
             .build()
             .unwrap();
         till_app_ready(&app);
