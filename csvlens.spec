@@ -19,7 +19,7 @@ BuildRequires: gcc
 csvlens is a command line CSV file viewer. It is like less but made for CSV.
 
 %prep
-%setup -q -n csvlens-%{version}
+%setup p1 -q -n csvlens-%{version}
 
 %build
 # Install Rust using curl
@@ -31,6 +31,7 @@ cargo build --release --locked
 # Install Rust using curl
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 export PATH="$PATH:$HOME/.cargo/bin"
+export CI=1
 RUST_BACKTRACE=1 cargo test --release --locked
 
 %install
