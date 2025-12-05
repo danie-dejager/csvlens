@@ -120,6 +120,12 @@ struct GetRowIndex {
     order_index: usize,
 }
 
+impl Drop for CsvLensReader {
+    fn drop(&mut self) {
+        self.terminate();
+    }
+}
+
 impl CsvLensReader {
     pub fn new(config: Arc<CsvConfig>) -> CsvlensResult<Self> {
         let mut reader = config.new_reader()?;
@@ -201,6 +207,7 @@ impl CsvLensReader {
 
         let num_fields = self.headers.len();
 
+        let mut should_stop = false;
         loop {
             if next_wanted.is_none() {
                 break;
@@ -217,7 +224,7 @@ impl CsvLensReader {
                 next_pos = pos_iter.next();
             }
             if let Some(pos) = seek_pos {
-                self.reader.seek(pos)?;
+                self.reader.seek(pos.clone())?;
                 stats.log_seek();
             }
 
@@ -266,6 +273,7 @@ impl CsvLensReader {
                     }
                 } else {
                     // no more records
+                    should_stop = true;
                     break;
                 }
             }
@@ -275,6 +283,12 @@ impl CsvLensReader {
                 // done. If next_wanted is not None, that means an out of bound
                 // index was provided - that could happen for small input - and
                 // we should ignore it and stop here regardless
+                break;
+            }
+
+            if should_stop {
+                // no more records, no point continuing even if there are more marked positions.
+                // This could be caused by out of bound indices or changed file content.
                 break;
             }
         }
@@ -300,6 +314,11 @@ impl CsvLensReader {
 
     pub fn get_pos_table(&self) -> Vec<Position> {
         self.internal.lock().unwrap().pos_table.clone()
+    }
+
+    fn terminate(&self) {
+        let mut m_guard = self.internal.lock().unwrap();
+        m_guard.terminate();
     }
 
     #[cfg(test)]
@@ -344,6 +363,7 @@ struct ReaderInternalState {
     total_line_number: Option<usize>,
     pos_table: Vec<Position>,
     done: bool,
+    should_terminate: bool,
 }
 
 impl ReaderInternalState {
@@ -352,6 +372,7 @@ impl ReaderInternalState {
             total_line_number: None,
             pos_table: vec![],
             done: false,
+            should_terminate: false,
         };
 
         let m_state = Arc::new(Mutex::new(internal));
@@ -382,6 +403,9 @@ impl ReaderInternalState {
                 let cur = n_bytes / pos_table_update_every;
                 if n_bytes > 0 && cur > last_updated_at {
                     let mut m = _m.lock().unwrap();
+                    if m.should_terminate {
+                        break;
+                    }
                     m.pos_table.push(next_pos.clone());
                     last_updated_at = cur;
                 }
@@ -394,6 +418,10 @@ impl ReaderInternalState {
         });
 
         (m_state, handle)
+    }
+
+    fn terminate(&mut self) {
+        self.should_terminate = true;
     }
 }
 

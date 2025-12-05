@@ -9,7 +9,8 @@ use crate::help;
 use crate::input::{Control, InputHandler};
 use crate::sort::{self, SortOrder, SorterStatus};
 use crate::ui::{CsvTable, CsvTableState, FilterColumnsState, FinderState};
-use crate::view::{self, ColumnsOffset};
+use crate::view::{self, ColumnsOffset, SelectionType};
+use crate::watch::{FileWatcher, Watcher};
 
 #[cfg(feature = "clipboard")]
 use arboard::Clipboard;
@@ -147,6 +148,11 @@ impl WrapMode {
     }
 }
 
+enum ScrollToFoundState {
+    Pending,
+    Done,
+}
+
 fn poll_finder_first_match(finder: &find::Finder, timeout: Duration) -> bool {
     let start = Instant::now();
     while start.elapsed() < timeout {
@@ -166,7 +172,7 @@ pub struct App {
     columns_filter: Option<Arc<ColumnsFilter>>,
     csv_table_state: CsvTableState,
     finder: Option<find::Finder>,
-    first_found_scrolled: bool,
+    scroll_to_found_state: ScrollToFoundState,
     frame_width: Option<u16>,
     transient_message: Option<String>,
     show_stats: bool,
@@ -197,8 +203,14 @@ impl App {
         color_columns: bool,
         prompt: Option<String>,
         wrap_mode: Option<WrapMode>,
+        auto_reload: bool,
     ) -> CsvlensResult<Self> {
-        let input_handler = InputHandler::new();
+        let watcher = if auto_reload {
+            Some(Arc::new(Watcher::new(filename)?))
+        } else {
+            None
+        };
+        let input_handler = InputHandler::new(watcher.map(FileWatcher::from));
 
         // Some lines are reserved for plotting headers (3 lines for headers + 2 lines for status bar)
         let num_rows_not_visible: u16 = 5;
@@ -239,7 +251,6 @@ impl App {
         );
 
         let finder: Option<find::Finder> = None;
-        let first_found_scrolled = false;
         let frame_width = None;
 
         let transient_message: Option<String> = None;
@@ -259,7 +270,7 @@ impl App {
             columns_filter: None,
             csv_table_state,
             finder,
-            first_found_scrolled,
+            scroll_to_found_state: ScrollToFoundState::Done,
             frame_width,
             transient_message,
             show_stats,
@@ -482,6 +493,33 @@ impl App {
             Control::ToggleSelectionType => {
                 self.rows_view.selection.toggle_selection_type();
             }
+            Control::ToggleMark => {
+                if let SelectionType::Row = self.rows_view.selection.selection_type() {
+                    if let Some(row_index) = self.rows_view.selection.row.index() {
+                        if let Some(toggle_result) = self.rows_view.toggle_mark(row_index as usize)
+                        {
+                            if toggle_result.marked {
+                                self.transient_message
+                                    .replace(format!("Marked line {}", toggle_result.record_num));
+                            } else {
+                                self.transient_message
+                                    .replace(format!("Unmarked line {}", toggle_result.record_num));
+                            }
+                        } else {
+                            self.transient_message
+                                .replace("Unable to mark this line".to_string());
+                        }
+                    }
+                } else {
+                    self.transient_message
+                        .replace("Marking of rows only works in row mode".to_string());
+                }
+            }
+            Control::ResetMarks => {
+                self.rows_view.clear_marks();
+                self.transient_message
+                    .replace("All marks cleared".to_string());
+            }
             Control::ToggleLineWrap(word_wrap) => {
                 self.handle_line_wrap_toggle(*word_wrap, true);
             }
@@ -558,6 +596,10 @@ impl App {
                     };
                 }
             }
+            Control::FileChanged => {
+                self.handle_file_changed()?;
+                self.csv_table_state.last_autoreload_at = Some(Instant::now());
+            }
             Control::Reset => {
                 self.csv_table_state.column_width_overrides.reset();
                 self.reset_filter();
@@ -619,10 +661,11 @@ impl App {
                 if let Some(finder) = &self.finder {
                     // Inherit previous finder's column index if any, instead of using the current
                     // selected column intended for sorter
-                    self.create_finder_with_column_index(
+                    self.create_finder_with_params(
                         target,
                         self.rows_view.is_filter(),
                         finder.column_index(),
+                        finder.starting_row_index(),
                         sorter,
                     );
                 } else {
@@ -634,27 +677,27 @@ impl App {
         if let Some(fdr) = self.finder.as_mut() {
             if !self.rows_view.is_filter() {
                 // scroll to first result once ready
-                if !self.first_found_scrolled && fdr.found_any() {
-                    if let Some(found_entry) = fdr.next() {
-                        scroll_to_found_entry(
-                            found_entry,
-                            &mut self.rows_view,
-                            &mut self.csv_table_state,
-                        );
+                match self.scroll_to_found_state {
+                    ScrollToFoundState::Pending => {
+                        if let Some(found_entry) = fdr.set_initial_cursor_if_ready() {
+                            scroll_to_found_entry(
+                                found_entry,
+                                &mut self.rows_view,
+                                &mut self.csv_table_state,
+                            );
+                            self.scroll_to_found_state = ScrollToFoundState::Done;
+                        }
                     }
-                    self.first_found_scrolled = true;
-                } else if self.first_found_scrolled {
-                    // Conditioned on first_found_scrolled to retain the initial Header row hint,
-                    // i.e. matches in the header row will be highlighted first
+                    ScrollToFoundState::Done => {
+                        // reset cursor if out of view
+                        if let Some(cursor_row_order) = fdr.cursor_row_order()
+                            && !self.rows_view.in_view(cursor_row_order as u64)
+                        {
+                            fdr.reset_cursor();
+                        }
 
-                    // reset cursor if out of view
-                    if let Some(cursor_row_order) = fdr.cursor_row_order()
-                        && !self.rows_view.in_view(cursor_row_order as u64)
-                    {
-                        fdr.reset_cursor();
+                        fdr.set_row_hint(self.rows_view.rows_from() as usize);
                     }
-
-                    fdr.set_row_hint(find::RowPos::Row(self.rows_view.rows_from() as usize));
                 }
             } else {
                 self.rows_view.set_filter(fdr).unwrap();
@@ -670,6 +713,7 @@ impl App {
         self.csv_table_state
             .set_cols_offset(self.rows_view.cols_offset());
         self.csv_table_state.selection = Some(self.rows_view.selection.clone());
+        self.csv_table_state.marked_rows = Some(self.rows_view.marked_rows().clone());
 
         if let Some(n) = self.rows_view.get_total_line_numbers() {
             self.csv_table_state.set_total_line_number(n, false);
@@ -697,7 +741,8 @@ impl App {
         // if let Some(finder) = &self.finder {
         //     self.csv_table_state.debug = format!("cursor: {:?}", finder.cursor);
         // }
-        // self.csv_table_state.debug = format!("cols_offset: {:?}", self.rows_view.cols_offset());
+        // self.csv_table_state.debug =
+        //     format!("last reload: {:?}", self.csv_table_state.last_autoreload_at);
 
         Ok(())
     }
@@ -728,26 +773,33 @@ impl App {
         None
     }
 
+    fn get_finder_starting_row_index(&self) -> usize {
+        self.rows_view.selected_offset().unwrap_or(0) as usize
+    }
+
     fn create_finder(&mut self, target: Regex, is_filter: bool, sorter: Option<Arc<sort::Sorter>>) {
-        self.create_finder_with_column_index(
+        self.create_finder_with_params(
             target,
             is_filter,
             self.get_selected_column_index().map(|x| x as usize),
+            self.get_finder_starting_row_index(),
             sorter,
         );
     }
 
-    fn create_finder_with_column_index(
+    fn create_finder_with_params(
         &mut self,
         target: Regex,
         is_filter: bool,
         column_index: Option<usize>,
+        starting_row_index: usize,
         sorter: Option<Arc<sort::Sorter>>,
     ) {
-        let mut finder = find::Finder::new(
+        let finder = find::Finder::new(
             self.shared_config.clone(),
             target,
             column_index,
+            starting_row_index,
             sorter,
             self.sort_order,
             self.columns_filter.clone(),
@@ -766,19 +818,8 @@ impl App {
             self.rows_view.set_rows_from(0).unwrap();
             self.rows_view.set_filter(&finder).unwrap();
         } else {
-            // will scroll to first result below once ready
-            self.first_found_scrolled = false;
             self.rows_view.reset_filter().unwrap();
-
-            // finder always searches from the beginning, but here row hint is set to the selected
-            // row so finder.next() will retrieve the next match after the selected row. Except when
-            // the very first row is selected, in which case the result will yield from the very
-            // top including the header row.
-            if let Some(selected_offset) = self.rows_view.selected_offset()
-                && selected_offset > 0
-            {
-                finder.set_row_hint(find::RowPos::Row(selected_offset as usize));
-            }
+            self.scroll_to_found_state = ScrollToFoundState::Pending;
         }
         self.finder = Some(finder);
     }
@@ -836,6 +877,62 @@ impl App {
             self.transient_message = Some(format!("Invalid regex: {pat}"));
         }
         self.csv_table_state.reset_buffer();
+    }
+
+    fn handle_file_changed(&mut self) -> CsvlensResult<()> {
+        // Recreate finder if any
+        if let Some(finder) = &self.finder {
+            let target = finder.target().clone();
+            self.create_finder_with_params(
+                target,
+                self.rows_view.is_filter(),
+                // TODO: this assumes the previous column index is still valid after reload which
+                // might not be true
+                finder.column_index(),
+                finder.starting_row_index(),
+                None,
+            );
+        }
+
+        // Recreate sorter if any
+        if let Some(sorter) = &self.sorter {
+            let selected_column_index = sorter.column_index as u64;
+            let column_name = self
+                .rows_view
+                .get_column_name_from_global_index(selected_column_index as usize);
+            let desired_sort_type = sorter.sort_type();
+            let _sorter = sort::Sorter::new(
+                self.shared_config.clone(),
+                selected_column_index as usize,
+                column_name,
+                desired_sort_type,
+            );
+            self.sorter = Some(Arc::new(_sorter));
+        }
+
+        // Update reader but preserve other states such as cursor position
+        let csvlens_reader = csv::CsvLensReader::new(self.shared_config.clone())?;
+        let filter_finder = if let Some(finder) = &self.finder
+            && self.rows_view.is_filter()
+        {
+            Some(finder)
+        } else {
+            None
+        };
+        self.rows_view.set_reader(csvlens_reader, filter_finder)?;
+        self.rows_view.reset_sorter()?;
+
+        // Re-apply columns filter if any
+        if let Some(columns_filter) = &self.columns_filter {
+            let columns_filter = Arc::new(ColumnsFilter::new(
+                columns_filter.pattern(),
+                self.rows_view.raw_headers(),
+            ));
+            self.columns_filter = Some(columns_filter.clone());
+            self.rows_view.set_columns_filter(&columns_filter).unwrap();
+        }
+
+        Ok(())
     }
 
     fn increase_cols_offset(&mut self) {
@@ -1007,6 +1104,7 @@ mod tests {
                 false,
                 self.prompt,
                 self.wrap_mode,
+                false,
             )
         }
 

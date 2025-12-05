@@ -1,9 +1,12 @@
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use crossterm::event::{Event, KeyEvent, KeyEventKind, poll, read};
 
+use crate::watch::FileWatcher;
+
 pub enum CsvlensEvent<I> {
     Input(I),
+    FileChanged,
     Tick,
 }
 
@@ -11,47 +14,35 @@ pub enum CsvlensEvent<I> {
 /// type is handled in its own thread and returned to a common `Receiver`
 pub struct CsvlensEvents {
     tick_rate: Duration,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct Config {
-    pub tick_rate: Duration,
-}
-
-impl Default for Config {
-    fn default() -> Config {
-        Config {
-            tick_rate: Duration::from_millis(250),
-        }
-    }
+    file_watcher: Option<FileWatcher>,
 }
 
 impl CsvlensEvents {
-    pub fn new() -> CsvlensEvents {
-        CsvlensEvents::with_config(Config::default())
-    }
-
-    pub fn with_config(config: Config) -> CsvlensEvents {
+    pub fn new(file_watcher: Option<FileWatcher>) -> CsvlensEvents {
         CsvlensEvents {
-            tick_rate: config.tick_rate,
+            tick_rate: Duration::from_millis(250),
+            file_watcher,
         }
     }
 
-    pub fn next(&self) -> std::io::Result<CsvlensEvent<KeyEvent>> {
-        let now = Instant::now();
+    pub fn next(&mut self) -> std::io::Result<CsvlensEvent<KeyEvent>> {
+        // let now = Instant::now();
         match poll(self.tick_rate) {
             Ok(true) => match read()? {
                 Event::Key(event) if event.kind == KeyEventKind::Press => {
                     Ok(CsvlensEvent::Input(event))
                 }
-                _ => {
-                    let time_spent = now.elapsed();
-                    let rest = self.tick_rate.saturating_sub(time_spent);
-
-                    Self { tick_rate: rest }.next()
-                }
+                _ => Ok(CsvlensEvent::Tick),
             },
-            Ok(false) => Ok(CsvlensEvent::Tick),
+            Ok(false) => {
+                if let Some(file_watcher) = &mut self.file_watcher {
+                    if file_watcher.check() {
+                        return Ok(CsvlensEvent::FileChanged);
+                    }
+                    return Ok(CsvlensEvent::Tick);
+                }
+                Ok(CsvlensEvent::Tick)
+            }
             Err(_) => todo!(),
         }
     }

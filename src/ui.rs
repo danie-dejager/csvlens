@@ -25,8 +25,10 @@ use tui_input::Input;
 
 use std::cmp::{max, min};
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
+use std::time::Instant;
 
 const NUM_SPACES_AFTER_LINE_NUMBER: u16 = 2;
 const NUM_SPACES_BETWEEN_COLUMNS: u16 = 4;
@@ -476,6 +478,24 @@ impl<'a> CsvTable<'a> {
                 filler_style = filler_style.patch(selected_style);
                 content_style = content_style.patch(selected_style);
             }
+
+            let is_marked = if matches!(row_type, RowType::Record(_)) {
+                match (row_index, &state.marked_rows) {
+                    (Some(idx), Some(marked_rows)) => marked_rows.contains(&(idx + 1)),
+                    _ => false,
+                }
+            } else {
+                false
+            };
+
+            if is_marked && !is_selected {
+                let marked_style = Style::default()
+                    .fg(state.theme.marked_foreground)
+                    .bg(state.theme.marked_background);
+                filler_style = filler_style.patch(marked_style);
+                content_style = content_style.patch(marked_style);
+            }
+
             let short_padding = match &state.selection {
                 Some(selection) => !matches!(selection.selection_type(), view::SelectionType::Row),
                 None => false,
@@ -808,6 +828,15 @@ impl<'a> CsvTable<'a> {
             // Ignore case option
             if state.ignore_case {
                 content += " [ignore-case]";
+            }
+
+            // Last autoreload time
+            if let Some(last_autoreload_at) = &state.last_autoreload_at {
+                content += format!(
+                    " [Last reload: {}s ago]",
+                    last_autoreload_at.elapsed().as_secs()
+                )
+                .as_str();
             }
 
             // Debug
@@ -1274,6 +1303,7 @@ pub struct CsvTableState {
     // TODO: should probably be with BordersState
     col_ending_pos_x: u16,
     pub selection: Option<view::Selection>,
+    pub marked_rows: Option<HashSet<usize>>,
     pub transient_message: Option<String>,
     pub echo_column: Option<String>,
     pub ignore_case: bool,
@@ -1285,6 +1315,7 @@ pub struct CsvTableState {
     pub theme: Theme,
     pub color_columns: bool,
     pub prompt: Option<String>,
+    pub last_autoreload_at: Option<Instant>,
     pub debug: String,
 }
 
@@ -1313,6 +1344,7 @@ impl CsvTableState {
             borders_state: None,
             col_ending_pos_x: 0,
             selection: None,
+            marked_rows: None,
             transient_message: None,
             echo_column: echo_column.clone(),
             ignore_case,
@@ -1324,6 +1356,7 @@ impl CsvTableState {
             theme: Theme::default(),
             color_columns,
             prompt,
+            last_autoreload_at: None,
             debug: "".into(),
         }
     }
