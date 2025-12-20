@@ -11,6 +11,7 @@ exclude = [".github/*", "tests/*"]
 keywords = ["cli", "csv", "viewer", "pager", "tui"]
 edition = "2024"
 rust-version = "1.88"
+default-run = "csvlens"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -30,6 +31,9 @@ arboard = { version = "3.6", default-features = false, features = ["wayland-data
 thiserror = "2"
 terminal-colorsaurus = "1.0"
 ansi-to-tui = "7.0.0"
+clap-cargo = {version = "0.18.3", optional = true}
+csv-core = "0.1.13"
+rand = { version = "0.8", optional = true }
 
 [target.'cfg(windows)'.dependencies]
 crossterm = "0.28"
@@ -37,7 +41,8 @@ crossterm = "0.28"
 [features]
 default = ["clipboard", "cli"]
 clipboard = ["dep:arboard"]
-cli = ["dep:clap"]
+cli = ["dep:clap", "dep:clap-cargo"]
+bench = ["dep:rand"]
 
 # The profile that 'cargo dist' will build with
 [profile.dist]
@@ -46,3 +51,20 @@ lto = "thin"
 
 [profile.release]
 strip = "debuginfo"
+
+[profile.bench]
+debug = true
+
+[dev-dependencies]
+rstest = "0.26.1"
+criterion = "0.5.1"
+rand = "0.8"
+
+[[bench]]
+name = "record_iterator"
+harness = false
+
+[[bin]]
+name = "build_bench_data"
+path = "src/bin/build_bench_data.rs"
+required-features = ["bench"]
