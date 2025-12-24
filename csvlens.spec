@@ -11,6 +11,8 @@ URL:      https://github.com/YS-L/csvlens
 Source0:  https://github.com/YS-L/csvlens/archive/refs/tags/v%{version}.tar.gz
 
 %define debug_package %{nil}
+%global _package_note_flags %{nil}
+%undefine _package_note_ldflags
 
 BuildRequires: curl
 BuildRequires: gcc
