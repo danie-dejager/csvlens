@@ -14,9 +14,11 @@ Source0:  https://github.com/YS-L/csvlens/archive/refs/tags/v%{version}.tar.gz
 %global _package_note_flags %{nil}
 %undefine _package_note_ldflags
 
-BuildRequires: curl
 BuildRequires: clang
 BuildRequires: lld
+BuildRequires: glibc-devel
+BuildRequires: libgcc
+BuildRequires: libgcc-devel
 
 %description
 csvlens is a command line CSV file viewer. It is like less but made for CSV.
