@@ -34,7 +34,7 @@ export PATH="$HOME/.cargo/bin:$PATH"
 # Force a stable, portable toolchain
 export CC=clang
 export CXX=clang++
-export RUSTFLAGS="-C linker=lld"
+export RUSTFLAGS="-C linker=clang -C link-arg=-fuse-ld=lld"
 
 cargo build --release --locked
 
