@@ -75,4 +75,6 @@ strip target/release/%{name}
 install -m 755 target/release/%{name} %{buildroot}/bin/
 
 %files
+%doc README*
+%license LICENSE*
 /bin/%{name}
