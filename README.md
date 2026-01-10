@@ -31,6 +31,7 @@ Key | Action
 `Ctrl + l` | Scroll one window right
 `Ctrl + ←` | Scroll left to first column
 `Ctrl + →` | Scroll right to last column
+`Ctrl + e` | Print the marked lines to stdout and exit
 `G` (or `End`) | Go to bottom
 `g` (or `Home`) | Go to top
 `<n>G` | Go to line `n`
@@ -53,6 +54,7 @@ Key | Action
 `f<n>` | Freeze this number of columns from the left
 `m` | Mark / unmark the selected row visually
 `M` | Clear all row marks
+`Ctrl + e` | Print the marked rows (with header) to stdout and exit
 `r` | Reset to default view (clear all filters and custom column widths)
 `H` (or `?`) | Display help
 `q` | Exit
